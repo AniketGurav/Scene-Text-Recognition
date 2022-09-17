@@ -1,0 +1,18 @@
+/**Python version used 3.6.15**/
+
+/**General syntax for reference:**/
+
+python3 mytrain.py --trainRoot <\path to the train lmdb dataset> \
+--valRoot <\path to the validation lmdb dataset> \
+--arch <\architecture:CRNN/STARNET> --lan <\language> --charlist <\path to the character text file> \
+--batchSize 32 --nepoch 15 --cuda --expr_dir <\path to the output experiments directory> \
+--displayInterval 10 --valInterval 100 --adadelta \ 
+--manualSeed 1234 --random_sample --deal_with_lossnan 
+
+
+/**Command to be used to run crnn:**/
+
+python3.6 mytrain.py --trainRoot Mal_train1/ --valRoot Mal_val1/ --arch crnn --lan malayalam --charlist malayalam_letters.txt --batchSize 32 --nepoch 15 --expr_dir output --displayInterval 10 --valInterval 100 --adadelta --manualSeed 1234 --random_sample --deal_with_lossnan --finetune finetune/ --cuda
+
+/**Command to be used to run starnet:**/
+python3.6 mytrain.py --trainRoot Mal_train1/ --valRoot Mal_val1/ --arch starnet --lan malayalam --charlist malayalam_letters.txt --batchSize 32 --nepoch 15 --expr_dir output --displayInterval 10 --valInterval 100 --adadelta --manualSeed 1234 --random_sample --deal_with_lossnan --finetune finetune/ --cuda

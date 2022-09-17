@@ -1,0 +1,8 @@
+pillow==8.1.0
+nltk==3.6.7
+numpy==1.19.5
+opencv-python==4.6.0.66
+tensorboard==2.3.0
+tensorboard-plugin-wit==1.8.1
+torch==1.2.0
+torchvision==0.4.0
