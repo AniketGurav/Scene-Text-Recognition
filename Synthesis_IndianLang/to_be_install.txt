@@ -1,0 +1,17 @@
+Python version used 2.7
+
+PIL
+pip install pillow
+
+Pango
+sudo apt-get install -y libsdl-pango-dev
+
+Cairo 
+sudo add-apt-repository ppa:cairo-dock-team/ppa
+
+Imagemagick
+sudo apt-get installcairo imagemagick
+
+Images to be downloaded for the background (Places206 is been used in the paper)
+http://places2.csail.mit.edu/download-private.html
+
