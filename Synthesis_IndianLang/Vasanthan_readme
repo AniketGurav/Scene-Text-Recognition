@@ -1,0 +1,10 @@
+Step 1: Copy all the fonts (for which the images should be synthesised) from the specific language folder and copy it to the .fonts folder in the home directory.
+Step 2: In the terminal run fc-cache for the system to install the fonts.
+Step 3: Download the images for background. (Places206)
+Step 4: run render_Indian_language_scentext.py with following command line arguments,
+# argv[1] -- vocab file with full path (vocab.txt)
+# argv[2] -- list of unique fonts to be used (fontlist/Tam_Uniq_RS.txt)
+# argv[3] -- parent dir where the rendered images will be written to 
+# argv[4] -- languageName ; eg Tamil
+# argv[5] -- iterationNumber , when the rendering is ran multiple times
+# argv[6] -- dir path for the pictures for the background
