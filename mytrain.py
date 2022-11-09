@@ -1,4 +1,4 @@
-from __future__ import print_function
+rom __future__ import print_function
 from __future__ import division
 
 import argparse
@@ -15,14 +15,17 @@ import utils
 import dataset
 import torch.nn as nn
 import copy
-import models.starnet as starnet
-import models.crnn as crnn
+# import models.starnet as starnet
+# import models.crnn as crnn
+import models.attn_model as am
 import string
 from nltk.metrics import edit_distance
 import torchvision
 import cv2
 import pdb
 from torch.utils.tensorboard import SummaryWriter
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+#CUDA_LAUNCH_BLOCKING=1
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--trainRoot', required=True, help='path to dataset')
@@ -47,7 +50,7 @@ parser.add_argument('--displayInterval', type=int, default=500, help='Interval t
 parser.add_argument('--n_test_disp', type=int, default=10, help='Number of samples to display when test')
 parser.add_argument('--valInterval', type=int, default=500, help='Interval to be displayed')
 parser.add_argument('--saveInterval', type=int, default=1000, help='Interval to be displayed')
-parser.add_argument('--lr', type=float, default=0.01, help='learning rate for Critic, not used by adadealta')
+parser.add_argument('--lr', type=float, default=0.01, help='learning rate for Critic, not used by adadelta')
 parser.add_argument('--beta1', type=float, default=0.5, help='beta1 for adam. default=0.5')
 parser.add_argument('--adam', action='store_true', help='Whether to use adam (default is rmsprop)')
 parser.add_argument('--adadelta', action='store_true', help='Whether to use adadelta (default is rmsprop)')
@@ -90,13 +93,16 @@ train_loader = torch.utils.data.DataLoader(
     sampler=sampler,shuffle=True, num_workers=int(opt.workers),
     collate_fn=dataset.alignCollate(imgH=opt.imgH, imgW=opt.imgW, keep_ratio=opt.keep_ratio))
 
-charlist_fname = opt.charlist 
+charlist_fname = opt.charlist
 opt.alphabet = open(charlist_fname,'r').readlines()
-nclass = len(opt.alphabet) + 1
-nc = 1
 
-converter = utils.strLabelConverter(opt.alphabet)
+# converter = utils.strLabelConverter(opt.alphabet)
+converter = utils.AttnLabelConverter_withCTC(opt.alphabet)
 criterion = nn.CTCLoss(zero_infinity=True)
+# criterion = torch.nn.CrossEntropyLoss(ignore_index=0).to(device)                                                                                                                                                                                         1,1           Top
+#for CTC decoder
+nclass = len(converter.character)
+nc = 1
 
 # custom weights initialization called on crnn
 def weights_init(m):
@@ -107,10 +113,8 @@ def weights_init(m):
         m.weight.data.normal_(1.0, 0.02)
         m.bias.data.fill_(0)
 
-if opt.arch == 'crnn':
-   crnn = crnn.CRNN(opt.imgH, nc, nclass, opt.nh)
-elif opt.arch == 'starnet':
-   crnn = starnet.STARNET(opt.imgH, opt.imgW, nc, nclass, opt.nh)
+#Attention model
+crnn = am.Attn_model(opt.imgH, opt.imgW, nc, nclass, opt.nh)
 
 crnn.apply(weights_init)
 model_dict = crnn.state_dict()
@@ -153,19 +157,20 @@ elif opt.adadelta:
 else:
     optimizer = optim.RMSprop(crnn.parameters(), lr=opt.lr)
 
-if opt.deal_with_lossnan:
-    if torch.__version__ >= '1.1.0':
-        if opt.cuda:
-            criterion = nn.CTCLoss(zero_infinity = True)
-            criterion = criterion.cuda()
-        else:
-            criterion = nn.CTCLoss(zero_infinity=True)
-    else:
-        crnn.register_backward_hook(crnn.backward_hook)
+#if opt.deal_with_lossnan:
+#    if torch.__version__ >= '1.1.0':
+#        if opt.cuda:
+#            criterion = nn.CTCLoss(zero_infinity = True)
+#            criterion = criterion.cuda()
+#        else:
+#            criterion = nn.CTCLoss(zero_infinity=True)
+#    else:
+#        crnn.register_backward_hook(crnn.backward_hook)
 
 def val(net, dataset, criterion, max_iter=100):
     print('Start val')
 
+    crnn = net
     for p in crnn.parameters():
         p.requires_grad = False
 
@@ -185,20 +190,24 @@ def val(net, dataset, criterion, max_iter=100):
         i += 1
         cpu_images, cpu_texts = data
         batch_size = cpu_images.size(0)
+
         utils.loadData(image, cpu_images)
         t, l = converter.encode(cpu_texts)
+        #print('Text size'+t.size())
         utils.loadData(text, t)
         utils.loadData(length, l)
 
-        preds = crnn(image, finetune=opt.finetune)
-        preds_size = Variable(torch.LongTensor([preds.size(0)] * batch_size))
-        cost = criterion(preds, text, preds_size, length) / batch_size
+        preds = crnn(image, t[:,:-1], is_train = False, finetune=opt.finetune)
+        preds_size = Variable(torch.LongTensor([preds.size(1)] * batch_size))
+        preds = preds.permute(1,0,2)
+
+        cost = criterion(preds, text.to(device), preds_size, length) / batch_size
         loss_avg.add(cost)
 
         _, preds = preds.max(2)
         preds = preds.squeeze(1)
         preds = preds.transpose(1, 0).contiguous().view(-1)
-        sim_preds = converter.decode(preds.data, preds_size.data, raw=False)
+        sim_preds = converter.decode(preds.data, preds_size.data,raw=False)
         for pred, target in zip(sim_preds, cpu_texts):
             target = target.lower().strip()
             gt = target.strip()
@@ -222,16 +231,22 @@ def val(net, dataset, criterion, max_iter=100):
 
 def trainBatch(net, criterion, optimizer):
     data = train_iter.next()
+
     cpu_images, cpu_texts = data
     batch_size = cpu_images.size(0)
+
     utils.loadData(image, cpu_images)
     t, l = converter.encode(cpu_texts)
+    #print('t-',t.size())
     utils.loadData(text, t)
     utils.loadData(length, l)
     optimizer.zero_grad()
-    preds = crnn(image, finetune=opt.finetune)
-    preds_size = Variable(torch.LongTensor([preds.size(0)] * batch_size))
-    cost = criterion(preds, text, preds_size, length) / batch_size
+    # print(t[:,:-1])
+    preds = crnn(image, t[:, :-1], finetune=opt.finetune)
+    preds_size = Variable(torch.LongTensor([preds.size(1)] * batch_size))
+    preds = preds.permute(1,0,2)
+
+    cost = criterion(preds, text.to(device), preds_size, length) / batch_size
     cost.backward()
     optimizer.step()
     return cost
@@ -247,7 +262,7 @@ writer = SummaryWriter('{0}/runs_{1}_{2}'.format(opt.savedir,opt.lan,opt.arch))
 for epoch in range(opt.nepoch):
     train_iter = iter(train_loader)
     i = 0
-    while i < len(train_loader):
+    while i < len(train_loader)-1:
         for p in crnn.parameters():
             p.requires_grad = True
         crnn.train()
@@ -265,7 +280,7 @@ for epoch in range(opt.nepoch):
 
         if i % opt.valInterval == 0:
             lossval, acc, crr = val(crnn, test_dataset, criterion)
-            # pdb.set_trace()	
+            # pdb.set_trace()   
             writer.add_scalar('Loss/val', lossval, (epoch*len(train_loader)+i)/opt.valInterval)
             writer.add_scalar('Acc-WRR/accuracy_val', acc, (epoch*len(train_loader)+i)/opt.valInterval)
             writer.add_scalar('CRR/char_val', crr, (epoch*len(train_loader)+i)/opt.valInterval)
@@ -276,4 +291,4 @@ for epoch in range(opt.nepoch):
                 filename = '{0}/best_model_{2}_{1}.pth'.format(opt.expr_dir, opt.arch, opt.lan)
                 torch.save(crnn.state_dict(), filename)
                 is_best = 0
-
+       
