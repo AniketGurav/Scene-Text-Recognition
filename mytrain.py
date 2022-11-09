@@ -1,4 +1,4 @@
-rom __future__ import print_function
+from __future__ import print_function
 from __future__ import division
 
 import argparse
@@ -25,7 +25,6 @@ import cv2
 import pdb
 from torch.utils.tensorboard import SummaryWriter
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-#CUDA_LAUNCH_BLOCKING=1
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--trainRoot', required=True, help='path to dataset')
@@ -74,10 +73,6 @@ if torch.cuda.is_available() and not opt.cuda:
     print("WARNING: You have a CUDA device, so you should probably run with --cuda")
 if torch.cuda.is_available() and opt.cuda:
     print('Nothing wrong with cuda')
-
-#train_dataset = dataset.lmdbDataset(root=opt.trainRoot)
-#test_dataset = dataset.lmdbDataset(root=opt.valRoot, transform=dataset.resizeNormalize((100, 32)))
-#test_dataset = dataset.lmdbDataset(root=opt.valRoot)
 
 train_dataset = dataset.loadDataset(root=opt.trainRoot)
 test_dataset = dataset.loadDataset(root=opt.valRoot, transform=dataset.resizeNormalize((100, 32)))
@@ -291,4 +286,3 @@ for epoch in range(opt.nepoch):
                 filename = '{0}/best_model_{2}_{1}.pth'.format(opt.expr_dir, opt.arch, opt.lan)
                 torch.save(crnn.state_dict(), filename)
                 is_best = 0
-       
