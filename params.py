@@ -2,7 +2,7 @@ import string
 
 # about data and net
 alphabet = string.digits + string.ascii_lowercase
-keep_ratio = True # whether to keep ratio for image resize
+keep_ratio = False # whether to keep ratio for image resize
 manualSeed = 1234 # reproduce experiemnt
 random_sample = True # whether to sample the dataset with random sampler
 imgH = 32 # the height of the input image to network
@@ -10,7 +10,7 @@ imgW = 100 # the width of the input image to network
 nh = 256 # size of the lstm hidden state
 nc = 1
 pretrained = '' # path to pretrained model (to continue training)
-expr_dir = '/scratch/sanjana/expr' # where to store samples and models
+expr_dir = '/output/model_info' # where to store samples and models
 dealwith_lossnan = False # whether to replace all nan/inf in gradients to zero
 
 # hardware
@@ -28,7 +28,8 @@ n_val_disp = 10 # number of samples to display when val the model
 # finetune
 nepoch = 1 # number of epochs to train for
 batchSize = 64 # input batch size
-lr = 0.0001 # learning rate for Critic, not used by adadealta
+#lr = 0.0001 # learning rate for Critic, not used by adadealta
+lr = 0.1
 beta1 = 0.5 # beta1 for adam. default=0.5
 adam = False # whether to use adam (default is rmsprop)
 adadelta = True # whether to use adadelta (default is rmsprop)
