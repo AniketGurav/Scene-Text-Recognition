@@ -32,7 +32,6 @@ class loadDataset(Dataset):
         return self.nSamples
 
     def __getitem__(self, index):
-        #print(index)
         assert index <= len(self), 'index range error'
 
         try:
@@ -46,13 +45,14 @@ class loadDataset(Dataset):
             img = self.transform(img)
 
         label = self.labelList[index]
+        if len(label) > 25:
+            return self[index+1]
 
         if self.target_transform is not None:
             label = self.target_transform(label)
 
         return (img, label)
-    
-    
+
 class resizeNormalize(object):
 
     def __init__(self, size, interpolation=Image.BILINEAR):
@@ -63,7 +63,16 @@ class resizeNormalize(object):
     def __call__(self, img):
         img = img.resize(self.size, self.interpolation)
         img = self.toTensor(img)
-        img.sub_(0.5).div_(0.5)
+        
+        if self.size[0] != self.size[1]:
+            img_PIL = transforms.ToPILImage() 
+            img = img_PIL(img)
+            new_img = Image.new(img.mode,(100,100))
+            new_img.paste(img)
+            new_img = self.toTensor(new_img)
+            img = new_img
+        
+        img.sub_(0.5).div(0.5)
         return img
 
 
@@ -116,8 +125,21 @@ class alignCollate(object):
             imgW = int(np.floor(max_ratio * imgH))
             imgW = max(imgH * self.min_ratio, imgW)  # assure imgH >= imgW
 
-        transform = resizeNormalize((imgW, imgH))
-        images = [transform(image) for image in images]
-        images = torch.cat([t.unsqueeze(0) for t in images], 0)
+        hori_transform = resizeNormalize((imgW, imgH))
+        verti_transform = resizeNormalize((imgH, imgW))
+        square_transform = resizeNormalize((100,100))
+        #images = [transform(image) for image in images]
+        temp = []
+        for image in images:
+            w, h = image.size
+            if w-h <= 20 or h-w <= 20:
+                temp.append(square_transform(image))
+            else:
+                if w >= h:
+                    temp.append(hori_transform(image))
+                else:
+                    temp.append(verti_transform(image))
+        
+        images = torch.cat([t.unsqueeze(0) for t in temp], 0)
 
         return images, labels
