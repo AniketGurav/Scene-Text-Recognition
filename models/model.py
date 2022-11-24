@@ -14,7 +14,6 @@ class Attn_model(nn.Module):
         hidden_size = nh
         class_size = nclass
         
-        #self.Transformation = TPS_SpatialTransformerNetwork(F = 20, I_size=(imgH, imgW), I_r_size=(imgH, imgW), I_channel_num = input_channel)
         self.FeatureExtraction = ResNet_FeatureExtractor(input_channel, output_channel)
         
         self.FeatureExtraction_output = 512
@@ -32,10 +31,6 @@ class Attn_model(nn.Module):
         visual_feature = visual_feature.view(b,h*w,c)
 
         output = self.Attention(visual_feature.contiguous(), text, is_train)
-        #print('output from att: ', output.size())
-        
-        #new code
-        #output = F.log_softmax(output, dim=2)
         return output
 
     def backward_hook(self, module, grad_input, grad_output):
