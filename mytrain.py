@@ -9,15 +9,12 @@ import torch.optim as optim
 import torch.utils.data
 from torch.autograd import Variable
 import numpy as np
-#from warpctc_pytorch import CTCLoss
 import os
 import utils
 import dataset
 import torch.nn as nn
 import copy
-# import models.starnet as starnet
-# import models.crnn as crnn
-import models.attn_model as am
+import model as am
 import string
 from nltk.metrics import edit_distance
 import torchvision
@@ -25,6 +22,7 @@ import cv2
 import pdb
 from torch.utils.tensorboard import SummaryWriter
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+#CUDA_LAUNCH_BLOCKING=1
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--trainRoot', required=True, help='path to dataset')
@@ -32,11 +30,11 @@ parser.add_argument('--valRoot', required=True, help='path to dataset')
 parser.add_argument('--lan', required=True, help='language to train on')
 parser.add_argument('--arch',required=True, help='select one of these - crnn or starnet')
 parser.add_argument('--charlist',required=True, help='path to the character list')
-parser.add_argument('--finetune', required=True, default=False, help='finetune on real data')
+parser.add_argument('--finetune', required=False, default=False, help='finetune on real data')
 parser.add_argument('--savedir', default='tensorboard_runs', help='where to store the tensorboard logs')
 parser.add_argument('--workers', type=int, help='number of data loading workers', default=2)
 parser.add_argument('--batchSize', type=int, default=16, help='input batch size')
-parser.add_argument('--imgH', type=int, default=32, help='the height of the input image to network')
+parser.add_argument('--imgH', type=int, default=32, help='the height of the input image to network')#32
 parser.add_argument('--imgW', type=int, default=100, help='the width of the input image to network')
 parser.add_argument('--nh', type=int, default=256, help='size of the lstm hidden state')
 parser.add_argument('--nepoch', type=int, default=50, help='number of epochs to train for')
@@ -75,7 +73,7 @@ if torch.cuda.is_available() and opt.cuda:
     print('Nothing wrong with cuda')
 
 train_dataset = dataset.loadDataset(root=opt.trainRoot)
-test_dataset = dataset.loadDataset(root=opt.valRoot, transform=dataset.resizeNormalize((100, 32)))
+test_dataset = dataset.loadDataset(root=opt.valRoot)
 assert train_dataset
 
 if not opt.random_sample:
@@ -86,20 +84,17 @@ else:
 train_loader = torch.utils.data.DataLoader(
     train_dataset, batch_size=opt.batchSize,
     sampler=sampler,shuffle=True, num_workers=int(opt.workers),
-    collate_fn=dataset.alignCollate(imgH=opt.imgH, imgW=opt.imgW, keep_ratio=opt.keep_ratio))
+    collate_fn=dataset.alignCollate(imgH=opt.imgH, imgW=opt.imgW, keep_ratio=False))
 
-charlist_fname = opt.charlist
+charlist_fname = opt.charlist 
 opt.alphabet = open(charlist_fname,'r').readlines()
 
-# converter = utils.strLabelConverter(opt.alphabet)
-converter = utils.AttnLabelConverter_withCTC(opt.alphabet)
-criterion = nn.CTCLoss(zero_infinity=True)
-# criterion = torch.nn.CrossEntropyLoss(ignore_index=0).to(device)                                                                                                                                                                                         1,1           Top
-#for CTC decoder
+converter = utils.AttnLabelConverter(opt.alphabet)
+criterion = torch.nn.CrossEntropyLoss(ignore_index=0).to(device)
+
 nclass = len(converter.character)
 nc = 1
 
-# custom weights initialization called on crnn
 def weights_init(m):
     classname = m.__class__.__name__
     if classname.find('Conv') != -1:
@@ -108,11 +103,10 @@ def weights_init(m):
         m.weight.data.normal_(1.0, 0.02)
         m.bias.data.fill_(0)
 
-#Attention model
-crnn = am.Attn_model(opt.imgH, opt.imgW, nc, nclass, opt.nh)
+model = am.Attn_model(opt.imgH, opt.imgW, nc, nclass, opt.nh)
 
-crnn.apply(weights_init)
-model_dict = crnn.state_dict()
+model.apply(weights_init)
+model_dict = model.state_dict()
 if opt.pretrained != '':
     model_path = opt.pretrained
     checkpoint = torch.load(model_path)
@@ -123,7 +117,7 @@ if opt.pretrained != '':
     print('loading pretrained model from %s' % opt.pretrained)
     pretrained_dict = {k: v for k, v in checkpoint.items() if checkpoint[k].size() == model_dict[k].size()}
     model_dict.update(pretrained_dict)
-    crnn.load_state_dict(model_dict)
+    model.load_state_dict(model_dict)
 
 image = torch.FloatTensor(opt.batchSize, 3, opt.imgH, opt.imgH)
 text = torch.LongTensor(opt.batchSize * 5)
@@ -131,8 +125,8 @@ length = torch.LongTensor(opt.batchSize)
 
 #opt.cuda = False
 if opt.cuda:
-    crnn = crnn.cuda()
-    crnn = torch.nn.DataParallel(crnn, device_ids=range(opt.ngpu))
+    model = model.cuda()
+    model = torch.nn.DataParallel(model, device_ids=range(opt.ngpu))
     image = image.cuda()
     criterion = criterion.cuda()
 
@@ -145,68 +139,67 @@ loss_avg = utils.averager()
 
 # setup optimizer
 if opt.adam:
-    optimizer = optim.Adam(crnn.parameters(), lr=opt.lr,
+    optimizer = optim.Adam(model.parameters(), lr=opt.lr,
                            betas=(opt.beta1, 0.999))
 elif opt.adadelta:
-    optimizer = optim.Adadelta(crnn.parameters())
+    optimizer = optim.Adadelta(model.parameters())
 else:
-    optimizer = optim.RMSprop(crnn.parameters(), lr=opt.lr)
+    optimizer = optim.RMSprop(model.parameters(), lr=opt.lr)
 
-#if opt.deal_with_lossnan:
-#    if torch.__version__ >= '1.1.0':
-#        if opt.cuda:
-#            criterion = nn.CTCLoss(zero_infinity = True)
-#            criterion = criterion.cuda()
-#        else:
-#            criterion = nn.CTCLoss(zero_infinity=True)
-#    else:
-#        crnn.register_backward_hook(crnn.backward_hook)
-
-def val(net, dataset, criterion, max_iter=100):
+def val(net, test_dataset, criterion, max_iter=100):
     print('Start val')
+    #new
+    batch_max_length = 25
 
-    crnn = net
-    for p in crnn.parameters():
+    for p in model.parameters():
         p.requires_grad = False
 
-    crnn.eval()
+    model.eval()
     data_loader = torch.utils.data.DataLoader(
-        dataset, shuffle=True, batch_size=opt.batchSize, num_workers=int(opt.workers))
+        test_dataset, shuffle=True, batch_size=opt.batchSize, num_workers=int(opt.workers),
+        collate_fn=dataset.alignCollate(imgH=opt.imgH, imgW=opt.imgW, keep_ratio=False))
+    
     val_iter = iter(data_loader)
 
     i = 0
     n_correct = 0
     loss_avg = utils.averager()
     norm_ED = 0
-    #max_iter = min(max_iter, len(data_loader))
     max_iter = len(data_loader)
     for i in range(max_iter):
         data = val_iter.next()
         i += 1
         cpu_images, cpu_texts = data
         batch_size = cpu_images.size(0)
+        
+        # For max length prediction
+        length_for_pred = torch.IntTensor([batch_max_length] * batch_size).to(device)
+        text_for_pred = torch.LongTensor(batch_size, batch_max_length + 1).fill_(0).to(device)
 
         utils.loadData(image, cpu_images)
         t, l = converter.encode(cpu_texts)
-        #print('Text size'+t.size())
         utils.loadData(text, t)
         utils.loadData(length, l)
 
-        preds = crnn(image, t[:,:-1], is_train = False, finetune=opt.finetune)
-        preds_size = Variable(torch.LongTensor([preds.size(1)] * batch_size))
-        preds = preds.permute(1,0,2)
+        #preds = model(image, t[:, :-1],is_train=False)  # align with Attention.forward
+        preds = model(image, text_for_pred, is_train=False)
+        preds = preds[:, :t.shape[1] - 1, :]
+        target = t[:, 1:]  # without [GO] Symbol
+        cost = criterion(preds.contiguous().view(-1, preds.shape[-1]), target.contiguous().view(-1))
 
-        cost = criterion(preds, text.to(device), preds_size, length) / batch_size
         loss_avg.add(cost)
 
         _, preds = preds.max(2)
-        preds = preds.squeeze(1)
-        preds = preds.transpose(1, 0).contiguous().view(-1)
-        sim_preds = converter.decode(preds.data, preds_size.data,raw=False)
+        sim_preds = converter.decode(preds, length_for_pred)
+        cpu_texts = converter.decode(t[:, 1:], l)
+        
         for pred, target in zip(sim_preds, cpu_texts):
-            target = target.lower().strip()
+            target = target.strip()
             gt = target.strip()
-            if pred == target:
+            gt = gt[:gt.find('[s]')]
+            pred = pred[:pred.find('[s]')]
+
+            if pred == gt:
                 n_correct += 1
             if len(gt) == 0 or len(pred) == 0:
                 norm_ED += 0
@@ -214,9 +207,17 @@ def val(net, dataset, criterion, max_iter=100):
                 norm_ED += 1 - edit_distance(pred, gt) / len(gt)
             else:
                 norm_ED += 1 - edit_distance(pred, gt) / len(pred)
-    raw_preds = converter.decode(preds.data, preds_size.data, raw=True)[:opt.n_test_disp]
-    for raw_pred, pred, gt in zip(raw_preds, sim_preds, cpu_texts):
-        print('%-20s => %-20s, gt: %-20s' % (raw_pred, pred, gt))
+                
+    for pred, gt in zip(sim_preds, cpu_texts):
+        pred = pred[:pred.find('[s]')]
+        pred = ''.join([i for i in pred])
+        gt = gt[:gt.find('[s]')]
+        gt = ''.join([i for i in gt])
+        
+        pred = pred.replace('\n','')
+        gt = gt.replace('\n','')
+
+        print('pred: %-20s, gt: %-20s' % (pred.strip(), gt.strip()))
     print("Samples Correctly recognised = " + str(n_correct))
     accuracy = n_correct / float(max_iter * opt.batchSize)
     crr = norm_ED / float(max_iter * opt.batchSize)
@@ -226,22 +227,21 @@ def val(net, dataset, criterion, max_iter=100):
 
 def trainBatch(net, criterion, optimizer):
     data = train_iter.next()
-
+    
     cpu_images, cpu_texts = data
     batch_size = cpu_images.size(0)
-
+    
     utils.loadData(image, cpu_images)
     t, l = converter.encode(cpu_texts)
-    #print('t-',t.size())
     utils.loadData(text, t)
     utils.loadData(length, l)
     optimizer.zero_grad()
-    # print(t[:,:-1])
-    preds = crnn(image, t[:, :-1], finetune=opt.finetune)
-    preds_size = Variable(torch.LongTensor([preds.size(1)] * batch_size))
-    preds = preds.permute(1,0,2)
+    
+    preds = model(image, t[:, :-1])  # align with Attention.forward
+    target = t[:, 1:]  # without [GO] Symbol
+    cost = criterion(preds.view(-1, preds.shape[-1]), target.contiguous().view(-1))
 
-    cost = criterion(preds, text.to(device), preds_size, length) / batch_size
+    model.zero_grad()
     cost.backward()
     optimizer.step()
     return cost
@@ -258,11 +258,11 @@ for epoch in range(opt.nepoch):
     train_iter = iter(train_loader)
     i = 0
     while i < len(train_loader)-1:
-        for p in crnn.parameters():
+        for p in model.parameters():
             p.requires_grad = True
-        crnn.train()
+        model.train()
 
-        cost = trainBatch(crnn, criterion, optimizer)
+        cost = trainBatch(model, criterion, optimizer)
         loss_avg.add(cost)
         l_avg.add(cost)
         i += 1
@@ -274,8 +274,8 @@ for epoch in range(opt.nepoch):
             loss_avg.reset()
 
         if i % opt.valInterval == 0:
-            lossval, acc, crr = val(crnn, test_dataset, criterion)
-            # pdb.set_trace()   
+            lossval, acc, crr = val(model, test_dataset, criterion)
+            # pdb.set_trace()	
             writer.add_scalar('Loss/val', lossval, (epoch*len(train_loader)+i)/opt.valInterval)
             writer.add_scalar('Acc-WRR/accuracy_val', acc, (epoch*len(train_loader)+i)/opt.valInterval)
             writer.add_scalar('CRR/char_val', crr, (epoch*len(train_loader)+i)/opt.valInterval)
@@ -284,5 +284,5 @@ for epoch in range(opt.nepoch):
             if is_best:
                 best_acc = acc
                 filename = '{0}/best_model_{2}_{1}.pth'.format(opt.expr_dir, opt.arch, opt.lan)
-                torch.save(crnn.state_dict(), filename)
+                torch.save(model.state_dict(), filename)
                 is_best = 0
