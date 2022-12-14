@@ -9,7 +9,6 @@ import torch.optim as optim
 import torch.utils.data
 from torch.autograd import Variable
 import numpy as np
-#from warpctc_pytorch import CTCLoss
 import os
 import utils
 import dataset
@@ -20,9 +19,7 @@ import operator
 
 import torch.nn as nn
 import copy
-# import models.starnet as starnet
-# import models.crnn as crnn
-import model as am
+import dict_model as am
 import string
 from nltk.metrics import edit_distance
 import torchvision
@@ -133,14 +130,15 @@ if opt.pretrained != '':
     model.load_state_dict(model_dict)
 
 image = torch.FloatTensor(opt.batchSize, 3, opt.imgH, opt.imgH)
-text = torch.LongTensor(opt.batchSize * 5)
-length = torch.LongTensor(opt.batchSize)
+text = torch.LongTensor(opt.batchSize * 5,10)
+length = torch.LongTensor(opt.batchSize,10)
 
 #opt.cuda = False
 if opt.cuda:
     model = model.cuda()
     model = torch.nn.DataParallel(model, device_ids=range(opt.ngpu))
     image = image.cuda()
+    text = text.cuda()
     criterion = criterion.cuda()
 
 image = Variable(image)
@@ -170,10 +168,7 @@ def val(net, test_dataset, criterion, max_iter=100):
     model.eval()
     data_loader = torch.utils.data.DataLoader(
         test_dataset, shuffle=True, batch_size=opt.batchSize, num_workers=int(opt.workers),
-        collate_fn=dataset.alignCollate(imgH=opt.imgH, imgW=opt.imgW, keep_ratio=False))
-    #data_loader = torch.utils.data.DataLoader(
-    #    test_dataset, shuffle=True, batch_size=opt.batchSize, num_workers=int(opt.workers))
-    
+        collate_fn=dataset.alignCollate(imgH=opt.imgH, imgW=opt.imgW, keep_ratio=False))    
     val_iter = iter(data_loader)
 
     i = 0
@@ -199,13 +194,13 @@ def val(net, test_dataset, criterion, max_iter=100):
         utils.loadData(length, l)
 
         # align with Attention.forward
-        preds = model(image, text_for_pred, is_train=False)
+        preds, cost = model(image, text_for_pred, distances=None, is_train=False)
         preds = preds[:, :t.shape[1] - 1, :]
         
         target = t[:, 1:]  # without [GO] Symbol
-        cost = criterion(preds.contiguous().view(-1, preds.shape[-1]), target.contiguous().view(-1))
+        #cost = criterion(preds.contiguous().view(-1, preds.shape[-1]), target.contiguous().view(-1))
 
-        loss_avg.add(cost)
+        #loss_avg.add(cost)
 
         _, preds = preds.max(2)
         
@@ -241,8 +236,8 @@ def val(net, test_dataset, criterion, max_iter=100):
     accuracy = n_correct / float(max_iter * opt.batchSize)
     crr = norm_ED / float(max_iter * opt.batchSize)
     lossval = loss_avg.val()
-    print('Test loss: %f, accuracy: %f, crr: %f' % (loss_avg.val(), accuracy, crr))
-    return lossval, accuracy, crr
+    print('accuracy(wrr): %f, crr: %f' % (accuracy, crr))
+    return accuracy, crr
 
 def give_candidates(target, how_many=10):
     candidates_list = list(trie.all_levenshtein(target, 3))
@@ -290,16 +285,16 @@ def trainBatch(net, criterion, optimizer):
     
     #dicitionary
     candidate_list_batches, edit_distance_batches = give_candidates_for_batches(cpu_texts)
-
-    t, l = converter.encode(cpu_texts)
     
-    utils.loadData(text, t)
-    utils.loadData(length, l)
+    t = []
+    l = []
+    for candidate in candidate_list_batches:
+        temp_t, temp_l = converter.encode(candidate)
+        t.append(temp_t)
+        l.append(temp_l)
     optimizer.zero_grad()
     
-    preds = model(image, t[:, :-1])  # align with Attention.forward
-    target = t[:, 1:]  # without [GO] Symbol
-    cost = criterion(preds.view(-1, preds.shape[-1]), target.contiguous().view(-1))
+    pred, cost = model(image, t, distances=edit_distance_batches, is_train=True)
 
     model.zero_grad()
     cost.backward()
@@ -334,7 +329,7 @@ for epoch in range(opt.nepoch):
             loss_avg.reset()
 
         if i % opt.valInterval == 0:
-            lossval, acc, crr = val(model, test_dataset, criterion)
+            acc, crr = val(model, test_dataset, criterion)
             # pdb.set_trace()	
             writer.add_scalar('Loss/val', lossval, (epoch*len(train_loader)+i)/opt.valInterval)
             writer.add_scalar('Acc-WRR/accuracy_val', acc, (epoch*len(train_loader)+i)/opt.valInterval)
@@ -344,5 +339,5 @@ for epoch in range(opt.nepoch):
             if is_best:
                 best_acc = acc
                 filename = '{0}/best_model_{2}_{1}.pth'.format(opt.expr_dir, opt.arch, opt.lan)
-                torch.save(crnn.state_dict(), filename)
+                torch.save(model.state_dict(), filename)
                 is_best = 0
